@@ -1,0 +1,14 @@
+{
+  "name": "gist-client",
+  "version": "1.0.0",
+  "description": "git client's npm",
+  "dependencies": {
+    "semantic-ui": "^2.2.7"
+  },
+  "devDependencies": {},
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "kataras <kataras2006@hotmail.com>",
+  "license": "MIT"
+}

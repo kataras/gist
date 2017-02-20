@@ -1,0 +1,3 @@
+package gist
+
+// domain
