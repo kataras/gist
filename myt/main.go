@@ -14,6 +14,7 @@ import (
 	"gopkg.in/kataras/iris.v6"
 	"gopkg.in/kataras/iris.v6/adaptors/httprouter"
 	"gopkg.in/kataras/iris.v6/adaptors/view"
+	"gopkg.in/kataras/iris.v6/adaptors/websocket"
 )
 
 type timeline struct {
@@ -68,7 +69,7 @@ func main() {
 
 	app.StaticWeb("/css", "./assets/css")
 
-	app.Get("/", func(ctx *iris.Context) {
+	h := func(ctx *iris.Context) {
 
 		source := "https://github.com/iris-contrib/gowebexamples/blob/master/examples/favicon/main.go"
 		raw := "https://raw.githubusercontent.com/iris-contrib/gowebexamples/master/examples/favicon/main.go"
@@ -135,7 +136,7 @@ func main() {
 			gopathVirtual = strings.Replace(gopathVirtual, k, v, 1)
 		}
 		gopathVirtual = "$GOPATH/src/" + gopathVirtual
-		goRunVirtual := "$ go run " + mainFile
+		goRunVirtual := "// $ go run " + mainFile
 
 		parentSource := strings.Replace(source, mainFile, "", 1)
 
@@ -152,7 +153,7 @@ func main() {
 				if strings.Contains(name, "/") {
 					// dir inside, split it
 					/// TODO: do multiple splits ofc... here we are just testing things
-					tree = append(tree, name[0:strings.Index(name, "/")]+"<br/>&nbsp;&nbsp;└──&nbsp;"+name[strings.Index(name, "/")+1:])
+					tree = append(tree, name[0:strings.Index(name, "/")]+"\n//   └── "+name[strings.Index(name, "/")+1:])
 				} else {
 					tree = append(tree, name)
 				}
@@ -164,20 +165,28 @@ func main() {
 			return !strings.Contains(tree[i], "/")
 		})
 
-		treeVisual := "$ ls<br/>"
+		treeVisual := "// $ ls\n"
 		for _, t := range tree {
-			treeVisual += "> " + t + "<br/>"
+			treeVisual += "// > " + t + "\n"
 		}
 
-		g.RunTutorial = template.HTML("$ cd " + gopathVirtual + "<br/>" + treeVisual + "<br/>" + goRunVirtual)
+		g.RunTutorial = template.HTML("// $ cd " + gopathVirtual + "\n" + treeVisual + "// \n" + goRunVirtual)
+		runTutorialPrefix := `
+//
+// +------------------------------------------------------------------------+
+// |                              How to run                                |
+// +------------------------------------------------------------------------+
+// `
 
-		withLastEdit := append([]byte("// edited "+strconv.Itoa(g.LastUpdate.Days)+" days ago\n"), body...)
+		withOnlineViews := append([]byte("// "+strconv.Itoa(onlineViews)+" online views\n"), body...)
+		withLastEdit := append([]byte("// edited "+strconv.Itoa(g.LastUpdate.Days)+" days ago\n"), withOnlineViews...)
 		withAuthor := append([]byte("// author "+g.Author.Username+"\n"), withLastEdit...)
 		withFile := append([]byte("// file "+mainFile+"\n"), withAuthor...)
+		withRunTutorial := append(withFile, []byte(runTutorialPrefix+"\n"+string(g.RunTutorial)+"\n//")...)
 		// file main.go
 		// author @kataras
 		// edited 2 days ago
-		h, err := syntaxhighlight.AsHTML(withFile)
+		h, err := syntaxhighlight.AsHTML(withRunTutorial)
 		if err != nil {
 			ctx.SetStatusCode(iris.StatusBadRequest)
 			ctx.Writef(err.Error())
@@ -186,7 +195,29 @@ func main() {
 		g.Content = template.HTML(string(h))
 
 		ctx.MustRender("gist.html", g)
-	})
+	}
+
+	app.Get("/", h) //app.Cache(h, 6*time.Hour))
+
+	ws := websocket.New(websocket.Config{Endpoint: "/gist-realtime"})
+	app.Adapt(ws)
+
+	ws.OnConnection(handleWebsocket)
 
 	app.Listen(":8080")
+}
+
+var onlineViews = 0
+
+func handleWebsocket(c websocket.Connection) {
+	c.On("watch", func() {
+		onlineViews++
+		c.To(websocket.All).Emit("watch", onlineViews)
+	})
+
+	c.OnDisconnect(func() {
+		onlineViews--
+		c.To(websocket.Broadcast).Emit("watch", onlineViews)
+	})
+
 }

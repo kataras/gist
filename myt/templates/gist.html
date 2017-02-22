@@ -14,18 +14,30 @@
 // edited: {{ .LastUpdate.Days }} days ago</pre> -->{{ .Content }}</pre>
     </div>
 
-    <div class="pln">
-        <pre class="prettyprint"></pre>
-    </div>
 
-    <div class="kwd">
-        <pre>{{ .RunTutorial }}</pre>
-    </div>
+
 
     <br/>
 
 
+    <script src="https://code.jquery.com/jquery-3.1.1.min.js" integrity="sha256-hVVnYaiADRTO2PzUGmuLJr8BLUSjGIZsDYGmIJLv2b8="
+        crossorigin="anonymous"></script>
+        <script src="/iris-ws.js"></script>
+        <script type="text/javascript">
+            var socket = new Ws("ws://localhost:8080/gist-realtime");
+            socket.OnConnect(function () {
+                socket.Emit("watch", "");
+            });
 
+            socket.OnDisconnect(function () {
+
+            });
+
+            // read events from the server
+            socket.On("watch", function (onlineViews) {
+                $("span.com:contains('online views')").text("// " + onlineViews + " online views")
+            });
+        </script>
 </body>
 
 </html>
