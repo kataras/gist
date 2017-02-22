@@ -37,6 +37,8 @@ type gist struct {
 	Description    string // header
 	Notes          string // footer
 	Tree           template.HTML
+	Source         string
+	Chapter        string
 }
 
 // diff returns the number of years, months, and days between t1 and t2, inclusive.
@@ -61,18 +63,35 @@ func diff(t1, t2 time.Time) (years, months, days int) {
 	return
 }
 
-func main() {
-	app := iris.New()
-	app.Adapt(iris.DevLogger())
-	app.Adapt(httprouter.New())
-	app.Adapt(view.HTML("./templates", ".html").Reload(true))
+var (
+	app *iris.Framework
+	ws  websocket.Server
+)
 
+func init() {
+	// init the server instance
+	app = iris.New()
+	// adapt a logger in dev mode
+	app.Adapt(iris.DevLogger())
+	// adapt router
+	app.Adapt(httprouter.New())
+	// adapt templaes
+	app.Adapt(view.HTML("./templates", ".html").Reload(true))
+	// adapt websocket
+	ws = websocket.New(websocket.Config{Endpoint: "/gist-realtime"})
+	ws.OnConnection(handleWebsocket)
+	app.Adapt(ws)
+}
+
+func main() {
 	app.StaticWeb("/css", "./assets/css")
 
 	h := func(ctx *iris.Context) {
 
 		source := "https://github.com/iris-contrib/gowebexamples/blob/master/examples/favicon/main.go"
+
 		raw := "https://raw.githubusercontent.com/iris-contrib/gowebexamples/master/examples/favicon/main.go"
+
 		mainFile := source[strings.LastIndex(source, "/")+1:]
 
 		doc, err := goquery.NewDocument(source)
@@ -93,9 +112,7 @@ func main() {
 			// ft := time.Now().Format(time.RFC3339)
 			// tm, _ := time.Parse(time.RFC3339, ft)
 			years, months, days := diff(g.LastUpdateDate, time.Now())
-			if days > 1 {
-				days--
-			}
+
 			tl := timeline{Years: years, Months: months, Days: days}
 			g.LastUpdate = tl
 		}
@@ -105,6 +122,7 @@ func main() {
 			ctx.Writef(err.Error())
 			return
 		}
+
 		body, err := ioutil.ReadAll(rawResource.Body)
 		if err != nil {
 			ctx.SetStatusCode(iris.StatusBadRequest)
@@ -136,7 +154,7 @@ func main() {
 			gopathVirtual = strings.Replace(gopathVirtual, k, v, 1)
 		}
 		gopathVirtual = "$GOPATH/src/" + gopathVirtual
-		goRunVirtual := "// $ go run " + mainFile
+		goRunVirtual := "$ go run " + mainFile
 
 		parentSource := strings.Replace(source, mainFile, "", 1)
 
@@ -147,77 +165,116 @@ func main() {
 			return
 		}
 		tree := make([]string, 0)
+		// parentDoc.Find("table.js-navigation-container tr.js-navigation-item").Each(func(i int, s *goquery.Selection) {
+		// 	name := s.Find(".content a").Text()
+		// 	if name != "" {
+		// 		if strings.Contains(name, "/") {
+		// 			// dir inside, split it
+		// 			/// TODO: do multiple splits ofc... here we are just testing things
+		// 			tree = append(tree, name[0:strings.Index(name, "/")]+"\n//   └── "+name[strings.Index(name, "/")+1:])
+		// 		} else {
+		// 			tree = append(tree, name)
+		// 		}
+		// 	}
+
+		// })
+		// // first the files
+		// sort.Slice(tree, func(i int, j int) bool {
+		// 	return !strings.Contains(tree[i], "/")
+		// })
+
+		// treeVisual := "// $ ls\n"
+		// for _, t := range tree {
+		// 	treeVisual += "// > " + t + "\n"
+		// }
+
+		// g.RunTutorial = template.HTML("// $ cd " + gopathVirtual + "\n" + treeVisual + "// \n" + goRunVirtual)
+		//	runTutorialPrefix := `
+		//
+		// +------------------------------------------------------------------------+
+		// |                              How to run                                |
+		// +------------------------------------------------------------------------+
+		// `
+		var readmeSource string
 		parentDoc.Find("table.js-navigation-container tr.js-navigation-item").Each(func(i int, s *goquery.Selection) {
 			name := s.Find(".content a").Text()
 			if name != "" {
+				if name == "README.md" {
+					return // break here and continue to the next element
+				}
 				if strings.Contains(name, "/") {
 					// dir inside, split it
 					/// TODO: do multiple splits ofc... here we are just testing things
-					tree = append(tree, name[0:strings.Index(name, "/")]+"\n//   └── "+name[strings.Index(name, "/")+1:])
+					tree = append(tree, name[0:strings.Index(name, "/")]+"<br/>&nbsp;&nbsp;  └── "+name[strings.Index(name, "/")+1:])
 				} else {
 					tree = append(tree, name)
 				}
 			}
 
 		})
+		println("README SOURCE: " + readmeSource)
 		// first the files
 		sort.Slice(tree, func(i int, j int) bool {
 			return !strings.Contains(tree[i], "/")
 		})
 
-		treeVisual := "// $ ls\n"
+		treeVisual := "$ ls<br/>"
 		for _, t := range tree {
-			treeVisual += "// > " + t + "\n"
+			treeVisual += "> " + t + "<br/>"
 		}
 
-		g.RunTutorial = template.HTML("// $ cd " + gopathVirtual + "\n" + treeVisual + "// \n" + goRunVirtual)
-		runTutorialPrefix := `
-//
-// +------------------------------------------------------------------------+
-// |                              How to run                                |
-// +------------------------------------------------------------------------+
-// `
+		g.RunTutorial = template.HTML("$ cd " + gopathVirtual + "<br/>" + treeVisual + goRunVirtual)
 
-		withOnlineViews := append([]byte("// "+strconv.Itoa(onlineViews)+" online views\n"), body...)
-		withLastEdit := append([]byte("// edited "+strconv.Itoa(g.LastUpdate.Days)+" days ago\n"), withOnlineViews...)
+		// withOnlineViews := append([]byte("// "+strconv.Itoa(onlineViews)+" online views\n"), body...)
+		withLastEdit := append([]byte("// edited "+strconv.Itoa(g.LastUpdate.Days)+" days ago\n"), body...)
 		withAuthor := append([]byte("// author "+g.Author.Username+"\n"), withLastEdit...)
 		withFile := append([]byte("// file "+mainFile+"\n"), withAuthor...)
-		withRunTutorial := append(withFile, []byte(runTutorialPrefix+"\n"+string(g.RunTutorial)+"\n//")...)
+		// withRunTutorial := append(withFile, []byte(runTutorialPrefix+"\n"+string(g.RunTutorial)+"\n//")...)
 		// file main.go
 		// author @kataras
 		// edited 2 days ago
-		h, err := syntaxhighlight.AsHTML(withRunTutorial)
+		h, err := syntaxhighlight.AsHTML(withFile)
 		if err != nil {
 			ctx.SetStatusCode(iris.StatusBadRequest)
 			ctx.Writef(err.Error())
 			return
 		}
 		g.Content = template.HTML(string(h))
+		g.Source = source
+
+		chapterName := source[0:strings.LastIndex(source, "/")]
+		chapterName = chapterName[strings.LastIndex(chapterName, "/")+1:]
+		g.Chapter = chapterName
 
 		ctx.MustRender("gist.html", g)
 	}
 
 	app.Get("/", h) //app.Cache(h, 6*time.Hour))
-
-	ws := websocket.New(websocket.Config{Endpoint: "/gist-realtime"})
-	app.Adapt(ws)
-
-	ws.OnConnection(handleWebsocket)
-
 	app.Listen(":8080")
 }
 
 var onlineViews = 0
 
 func handleWebsocket(c websocket.Connection) {
-	c.On("watch", func() {
+
+	var sources []string
+
+	c.On("watch", func(pageSource string) {
+		sources = append(sources, pageSource)
+		// join the socket to a room linked with the page source
+		c.Join(pageSource)
 		onlineViews++
-		c.To(websocket.All).Emit("watch", onlineViews)
+		c.To(pageSource).Emit("watch", onlineViews)
 	})
 
 	c.OnDisconnect(func() {
 		onlineViews--
-		c.To(websocket.Broadcast).Emit("watch", onlineViews)
+		for _, source := range sources {
+			for _, conn := range ws.GetConnectionsByRoom(source) {
+				conn.Emit("watch", onlineViews)
+			}
+		}
+
 	})
 
 }
