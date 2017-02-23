@@ -84,12 +84,78 @@ func init() {
 	app.Adapt(ws)
 }
 
+type (
+	entry struct {
+		key   []byte
+		value []byte
+	}
+	memcache []entry
+)
+
+func (r *memcache) Set(key string, value []byte) {
+	args := *r
+	n := len(args)
+	for i := 0; i < n; i++ {
+		kv := &args[i]
+		if string(kv.key) == key {
+			kv.value = value
+			return
+		}
+	}
+
+	c := cap(args)
+	if c > n {
+		args = args[:n+1]
+		kv := &args[n]
+		kv.key = append(kv.key[:0], key...)
+		kv.value = value
+		*r = args
+		return
+	}
+
+	kv := entry{}
+	kv.key = append(kv.key[:0], key...)
+	kv.value = value
+	*r = append(args, kv)
+}
+
+func (r *memcache) Get(key string) []byte {
+	args := *r
+	n := len(args)
+	for i := 0; i < n; i++ {
+		kv := &args[i]
+		if string(kv.key) == key {
+			return kv.value
+		}
+	}
+	return nil
+}
+
+func (r *memcache) Reset() {
+	*r = (*r)[:0]
+}
+
 func main() {
 	app.StaticWeb("/css", "./assets/css")
+	var cache memcache // lock-free
+	rootRepo := "https://github.com/iris-contrib/examples"
 
 	h := func(ctx *iris.Context) {
+		relPath := ctx.Param("example")
+		if !strings.Contains(relPath, ".") {
+			// if main.go missing append it
+			relPath += "/main.go"
+			relPath = strings.Replace(relPath, "//", "/", -1)
+		}
 
-		source := "https://github.com/iris-contrib/examples/blob/master/subdomains_1/main.go"
+		source := rootRepo + "/blob/master/" + relPath
+
+		if body := cache.Get(source); len(body) > 0 {
+			ctx.Write(body)
+			println("body found")
+			return
+		}
+
 		repl := map[string]string{
 			"https://github.com": "https://raw.githubusercontent.com",
 			"/blob":              "",
@@ -137,20 +203,30 @@ func main() {
 			return
 		}
 
-		description := ""
-		pckMainDescStart := []byte("// Package main ")
-		pckMainDescEnd := []byte("package main")
-		// find the description of the form // Package .... does this and that
-		// We will assume that the package has the name of 'main', in order to be runnable go needs that, so we assume that.
-		if bytes.Contains(body, pckMainDescStart) {
-			// take the content after the // Pakcage_$main_ until the lowercase package $main
-			descriptionB := body[bytes.Index(body, pckMainDescStart):bytes.LastIndex(body, pckMainDescEnd)]
-			body = bytes.Replace(body, descriptionB, []byte(""), 1)
-			description = string(descriptionB[len(pckMainDescStart):])
+		findDescription := func(start string) string {
+			pckMainDescStart := []byte(start)
+			pckMainDescEnd := []byte("package main")
+			// find the description of the form // Package .... does this and that
+			// We will assume that the package has the name of 'main', in order to be runnable go needs that, so we assume that.
+			if bytes.Contains(body, pckMainDescStart) {
+				// take the content after the // Pakcage_$main_ until the lowercase package $main
+				descriptionB := body[bytes.Index(body, pckMainDescStart):bytes.LastIndex(body, pckMainDescEnd)]
+				body = bytes.Replace(body, descriptionB, []byte(""), 1)
+				description := string(descriptionB[len(pckMainDescStart):])
+				firstChar := string(description[0])
+				description = strings.ToUpper(firstChar) + description[1:] // uppercase the first letter
+
+				return description
+			}
+			return ""
 		}
-		firstChar := string(description[0])
-		description = strings.ToUpper(firstChar) + description[1:] // uppercase the first letter
-		g.Description = description
+
+		g.Description = findDescription("// Package main ")
+		if g.Description == "" {
+			// try with lowercase
+			g.Description = findDescription("// package main ")
+			// if not found and here just skip the description
+		}
 
 		g.Author = author{}
 		authorElem := doc.Find("img.avatar")
@@ -187,36 +263,6 @@ func main() {
 			return
 		}
 		tree := make([]string, 0)
-		// parentDoc.Find("table.js-navigation-container tr.js-navigation-item").Each(func(i int, s *goquery.Selection) {
-		// 	name := s.Find(".content a").Text()
-		// 	if name != "" {
-		// 		if strings.Contains(name, "/") {
-		// 			// dir inside, split it
-		// 			/// TODO: do multiple splits ofc... here we are just testing things
-		// 			tree = append(tree, name[0:strings.Index(name, "/")]+"\n//   └── "+name[strings.Index(name, "/")+1:])
-		// 		} else {
-		// 			tree = append(tree, name)
-		// 		}
-		// 	}
-
-		// })
-		// // first the files
-		// sort.Slice(tree, func(i int, j int) bool {
-		// 	return !strings.Contains(tree[i], "/")
-		// })
-
-		// treeVisual := "// $ ls\n"
-		// for _, t := range tree {
-		// 	treeVisual += "// > " + t + "\n"
-		// }
-
-		// g.RunTutorial = template.HTML("// $ cd " + gopathVirtual + "\n" + treeVisual + "// \n" + goRunVirtual)
-		//	runTutorialPrefix := `
-		//
-		// +------------------------------------------------------------------------+
-		// |                              How to run                                |
-		// +------------------------------------------------------------------------+
-		// `
 
 		parentDoc.Find("table.js-navigation-container tr.js-navigation-item").Each(func(i int, s *goquery.Selection) {
 			name := s.Find(".content a").Text()
@@ -242,7 +288,7 @@ func main() {
 			return !strings.Contains(tree[i], "/")
 		})
 
-		treeVisual := "$ ls<br/>"
+		treeVisual := "$ tree<br/>"
 		for _, t := range tree {
 			treeVisual += "> " + t + "<br/>"
 		}
@@ -268,12 +314,22 @@ func main() {
 
 		chapterName := source[0:strings.LastIndex(source, "/")]
 		chapterName = chapterName[strings.LastIndex(chapterName, "/")+1:]
+		chapterName = strings.Replace(chapterName, "_", " ", -1)
+		chapterName = strings.Replace(chapterName, "-", " ", -1)
+		chapterName = strings.ToUpper(string(chapterName[0])) + chapterName[1:] // uppercase the first letter
 		g.Chapter = chapterName
 
-		ctx.MustRender("gist.html", g)
+		buff := &bytes.Buffer{}
+		// use the app's render instead of context in order to write the result on another writer(bytes.Buffer).
+		app.Render(buff, "gist.html", g)
+		// set the cache
+		cache.Set(source, buff.Bytes())
+		// send the body to the client
+		ctx.Write(buff.Bytes())
 	}
 
-	app.Get("/", h) //app.Cache(h, 6*time.Hour))
+	// http://localhost:8080/example/subdomains_1/main.go
+	app.Get("/example/*example", h) //app.Cache(h, 6*time.Hour))
 	app.Listen(":8080")
 }
 
