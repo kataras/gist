@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"html/template"
 	"io/ioutil"
 	"net/http"
@@ -88,9 +89,15 @@ func main() {
 
 	h := func(ctx *iris.Context) {
 
-		source := "https://github.com/iris-contrib/gowebexamples/blob/master/examples/favicon/main.go"
-
-		raw := "https://raw.githubusercontent.com/iris-contrib/gowebexamples/master/examples/favicon/main.go"
+		source := "https://github.com/iris-contrib/examples/blob/master/subdomains_1/main.go"
+		repl := map[string]string{
+			"https://github.com": "https://raw.githubusercontent.com",
+			"/blob":              "",
+		}
+		raw := source
+		for k, v := range repl {
+			raw = strings.Replace(raw, k, v, 1)
+		}
 
 		mainFile := source[strings.LastIndex(source, "/")+1:]
 
@@ -129,6 +136,19 @@ func main() {
 			ctx.Writef(err.Error())
 			return
 		}
+
+		description := ""
+		pckMainDescStart := []byte("// Package main ")
+		pckMainDescEnd := []byte("package main")
+		// find the description of the form // Package .... does this and that
+		// We will assume that the package has the name of 'main', in order to be runnable go needs that, so we assume that.
+		if bytes.Contains(body, pckMainDescStart) {
+			// take the content after the // Pakcage_$main_ until the lowercase package $main
+			description = string(body[bytes.Index(body, pckMainDescStart)+len(pckMainDescStart) : bytes.LastIndex(body, pckMainDescEnd)])
+		}
+		firstChar := string(description[0])
+		description = strings.ToUpper(firstChar) + description[1:] // uppercase the first letter
+		g.Description = description
 
 		g.Author = author{}
 		authorElem := doc.Find("img.avatar")
@@ -195,7 +215,7 @@ func main() {
 		// |                              How to run                                |
 		// +------------------------------------------------------------------------+
 		// `
-		var readmeSource string
+
 		parentDoc.Find("table.js-navigation-container tr.js-navigation-item").Each(func(i int, s *goquery.Selection) {
 			name := s.Find(".content a").Text()
 			if name != "" {
@@ -212,7 +232,7 @@ func main() {
 			}
 
 		})
-		println("README SOURCE: " + readmeSource)
+
 		// first the files
 		sort.Slice(tree, func(i int, j int) bool {
 			return !strings.Contains(tree[i], "/")
