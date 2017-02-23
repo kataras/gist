@@ -144,7 +144,9 @@ func main() {
 		// We will assume that the package has the name of 'main', in order to be runnable go needs that, so we assume that.
 		if bytes.Contains(body, pckMainDescStart) {
 			// take the content after the // Pakcage_$main_ until the lowercase package $main
-			description = string(body[bytes.Index(body, pckMainDescStart)+len(pckMainDescStart) : bytes.LastIndex(body, pckMainDescEnd)])
+			descriptionB := body[bytes.Index(body, pckMainDescStart):bytes.LastIndex(body, pckMainDescEnd)]
+			body = bytes.Replace(body, descriptionB, []byte(""), 1)
+			description = string(descriptionB[len(pckMainDescStart):])
 		}
 		firstChar := string(description[0])
 		description = strings.ToUpper(firstChar) + description[1:] // uppercase the first letter
@@ -222,12 +224,14 @@ func main() {
 				if name == "README.md" {
 					return // break here and continue to the next element
 				}
+
 				if strings.Contains(name, "/") {
 					// dir inside, split it
 					/// TODO: do multiple splits ofc... here we are just testing things
 					tree = append(tree, name[0:strings.Index(name, "/")]+"<br/>&nbsp;&nbsp;  └── "+name[strings.Index(name, "/")+1:])
 				} else {
-					tree = append(tree, name)
+					resourceSource := strings.Replace(source, mainFile, name, 1)
+					tree = append(tree, "<a target='_blank' href='"+resourceSource+"'>"+name+"</a>")
 				}
 			}
 
