@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
@@ -86,7 +87,7 @@ func init() {
 
 type (
 	entry struct {
-		key   []byte
+		key   string
 		value []byte
 	}
 	memcache []entry
@@ -97,7 +98,7 @@ func (r *memcache) Set(key string, value []byte) {
 	n := len(args)
 	for i := 0; i < n; i++ {
 		kv := &args[i]
-		if string(kv.key) == key {
+		if kv.key == key {
 			kv.value = value
 			return
 		}
@@ -107,14 +108,14 @@ func (r *memcache) Set(key string, value []byte) {
 	if c > n {
 		args = args[:n+1]
 		kv := &args[n]
-		kv.key = append(kv.key[:0], key...)
+		kv.key = key
 		kv.value = value
 		*r = args
 		return
 	}
 
 	kv := entry{}
-	kv.key = append(kv.key[:0], key...)
+	kv.key = key
 	kv.value = value
 	*r = append(args, kv)
 }
@@ -124,7 +125,7 @@ func (r *memcache) Get(key string) []byte {
 	n := len(args)
 	for i := 0; i < n; i++ {
 		kv := &args[i]
-		if string(kv.key) == key {
+		if kv.key == key {
 			return kv.value
 		}
 	}
@@ -152,7 +153,6 @@ func main() {
 
 		if body := cache.Get(source); len(body) > 0 {
 			ctx.Write(body)
-			println("body found")
 			return
 		}
 
@@ -335,24 +335,137 @@ func main() {
 
 var onlineViews = 0
 
+type pageView struct {
+	source string
+	count  uint64
+}
+
+func (v *pageView) increment() {
+	atomic.AddUint64(&v.count, 1)
+}
+
+func (v *pageView) decrement() {
+	oldCount := v.count
+	if oldCount > 0 {
+		atomic.StoreUint64(&v.count, oldCount-1)
+	}
+}
+
+func (v *pageView) getCount() uint64 {
+	val := atomic.LoadUint64(&v.count)
+	// println(v.source + " = ")
+	// println(val)
+	return val
+}
+
+type (
+	views []pageView
+)
+
+func (v *views) Add(source string) {
+	args := *v
+	n := len(args)
+	for i := 0; i < n; i++ {
+		kv := &args[i]
+		if kv.source == source {
+			kv.increment()
+			return
+		}
+	}
+
+	c := cap(args)
+	if c > n {
+		args = args[:n+1]
+		kv := &args[n]
+		kv.source = source
+		kv.count = 1
+		*v = args
+		return
+	}
+
+	kv := pageView{}
+	kv.source = source
+	kv.count = 1
+	*v = append(args, kv)
+}
+
+func (v *views) Get(source string) *pageView {
+	args := *v
+	n := len(args)
+	for i := 0; i < n; i++ {
+		kv := &args[i]
+		if kv.source == source {
+			return kv
+		}
+	}
+	return nil
+}
+
+func (v *views) GetOrSet(source string) *pageView {
+	args := *v
+	n := len(args)
+	for i := 0; i < n; i++ {
+		kv := &args[i]
+		if kv.source == source {
+			return kv
+		}
+	}
+	kv := pageView{source: source, count: 0}
+	*v = append(args, kv)
+	// println("create new ")
+	return &kv
+}
+
+func (v *views) Reset() {
+	*v = (*v)[:0]
+}
+
+var v views
+
 func handleWebsocket(c websocket.Connection) {
 
-	var sources []string
-
 	c.On("watch", func(pageSource string) {
-		sources = append(sources, pageSource)
+		//	pagesView := v.GetOrSet(pageSource)
+		// pagesView.increment()
+		v.Add(pageSource)
 		// join the socket to a room linked with the page source
 		c.Join(pageSource)
-		onlineViews++
-		c.To(pageSource).Emit("watch", onlineViews)
+		if val := c.GetValue("sources"); val == nil {
+			c.SetValue("sources", []string{pageSource})
+		} else if arrSources, ok := val.([]string); ok {
+			arrSources = append(arrSources, pageSource)
+		}
+
+		viewsCount := v.Get(pageSource).getCount()
+		if viewsCount == 0 {
+			viewsCount++
+		}
+		c.To(pageSource).Emit("watch", viewsCount)
 	})
 
-	c.OnDisconnect(func() {
-		onlineViews--
-		for _, source := range sources {
-			for _, conn := range ws.GetConnectionsByRoom(source) {
-				conn.Emit("watch", onlineViews)
-			}
+	c.OnLeave(func(roomName string) {
+		if room != c.ID() { // if the roomName  it's not the connection iself
+			// the roomName here is the source, this is the only room(except the connection's ID room) which we join the users to.
+			pageV := v.Get(roomName)
+			// decrement -1 the specific counter for this page source.
+			pageV.decrement()
+			// 1. open 30 tabs.
+			// 2. close the browser.
+			// 3. re-open the browser
+			// 4. should be  v.getCount() = 1
+			// in order to achieve the previous flow we should decrement exactly when the user disconnects
+			// but emit the result a little after, on a goroutine
+			// getting all connections within this room and emit the online views one by one.
+			// note:
+			// we can also add a time.Sleep(2-3 seconds) inside the goroutine at the future.
+			go func(currentConnID string) {
+				for _, conn := range ws.GetConnectionsByRoom(room) {
+					if conn.ID() != currentConnID {
+						conn.Emit("watch", pageV.getCount())
+					}
+
+				}
+			}(c.ID())
 		}
 
 	})
