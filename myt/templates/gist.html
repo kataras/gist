@@ -1,7 +1,7 @@
 <html>
 
 <head>
-    <title>Gist demo</title>
+    <title>{{ .Chapter }}</title>
     <link href="/css/prettify.css" media="all" rel="stylesheet" />
     <style>
         body {
@@ -123,53 +123,47 @@
 
 <body>
     <div class="container">
-        <h1><a target="_blank" href="{{ .Source }}">{{ .Chapter }} <span class="lit" id="online_views">[ 0 online views ]</span></a></h1>
+        <h1><a target="_blank" href="{{ .Source }}">{{ .Chapter }} <span class="lit" id="online_views">[ 1 online view ]</span></a></h1>
         <p>
             {{ .Description }}
         </p>
-        <pre style="white-space: pre-wrap;word-wrap: break-word;">
-<!--<pre class="com">
-// author: {{ .Author.Username }}
-// edited: {{ .LastUpdate.Days }} days ago</pre> -->{{ .Content }}</pre>
+        <pre style="white-space: pre-wrap;word-wrap: break-word;">{{ .Content }}</pre>
 
         <div class="demo">
             {{ .RunTutorial }}
         </div>
     </div>
 
-
-
-
-    <br/>
-
     <script type="text/javascript">
         var PAGE_SOURCE = {{ .Source }}
     </script>
-
     <script src="https://code.jquery.com/jquery-3.1.1.min.js" integrity="sha256-hVVnYaiADRTO2PzUGmuLJr8BLUSjGIZsDYGmIJLv2b8="
         crossorigin="anonymous"></script>
+
         <script src="/iris-ws.js"></script>
+
         <script type="text/javascript">
             var socket = new Ws("ws://localhost:8080/gist-realtime");
+
             socket.OnConnect(function () {
                 socket.Emit("watch", PAGE_SOURCE);
             });
 
-            socket.OnDisconnect(function () {
-                $("span.com:contains('online views')").text("// you've been disconnected");
-            });
 
-            // No need to track the SOURCE
-            // this event will be thrown on the same room which is specified on the server-side
             socket.On("watch", function (onlineViews) {
+                var text = "1 online view";
+                if (onlineViews > 1) {
+                    text = onlineViews + " online views";
+                }
                 // $("span.com:contains('online views')").text("[ " + onlineViews + " online views ]");
-                $("#online_views").text("[ " + onlineViews + " online views ]");
+                $("#online_views").text("[ " + text + " ]");
             });
 
-            // socket.On("reload", function (newBody) {
-            //     $(body).html(newBody);
-            // });
+            socket.OnDisconnect(function () {
+                $("#online_views").text("[ you've been disconnected ]");
+            });
         </script>
+
 </body>
 
 </html>
